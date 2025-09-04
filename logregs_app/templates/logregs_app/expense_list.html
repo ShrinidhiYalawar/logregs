@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Expense List</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    #expenseChart {
+      min-height: 300px;
+    }
+    .modal-body {
+      position: relative;
+      height: 400px;
+    }
+    #noDataMessage {
+      text-align: center;
+      color: red;
+      font-weight: bold;
+      margin-top: 20px;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container mt-4">
+
+    <!-- User Info -->
+    <div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-2">
+      <h4 class="mb-0 d-flex align-items-center gap-2">
+        Welcome, {{ request.user.name }}
+        {% if request.user.is_admin %}
+          <span class="badge bg-danger">🛡️ Admin</span>
+          <a href="{% url 'add-title' %}" class="btn btn-sm btn-outline-success ms-2">+ Add Title</a>
+        {% else %}
+          <span class="badge bg-secondary">👤 User</span>
+        {% endif %}
+      </h4>
+      {% if not request.user.is_admin and request.user.admin %}
+      <p class="text-muted">Under Admin: <strong>{{ request.user.admin.name }}</strong></p>
+      {% endif %}
+      <div class="d-flex gap-2">
+        <a href="{% url 'change-password' %}" class="btn btn-sm btn-outline-warning">🔒 Change Password</a>
+        <a href="{% url 'logout' %}" class="btn btn-sm btn-outline-danger">🔓 Logout</a>
+      </div>
+    </div>
+
+    <!-- Action Buttons -->
+    <div class="d-flex justify-content-end flex-wrap gap-2 mb-4">
+      <a href="{% url 'add-expense' %}" class="btn btn-sm btn-primary">➕ Add Expense</a>
+      <button class="btn btn-sm btn-info text-white" data-bs-toggle="modal" data-bs-target="#chartModal">📊 Charts</button>
+      {% if request.user.is_admin %}
+        <a href="{% url 'register-user' %}" class="btn btn-sm btn-success">🧑‍💼 Register User</a>
+      {% endif %}
+    </div>
+
+    <!-- Expense Table -->
+    {% if expenses %}
+      <table class="table table-bordered table-hover">
+        <thead class="table-dark">
+          <tr>
+            <th>Title</th>
+            <th>Amount (₹)</th>
+            <th>Description</th>
+            <th>Date</th>
+            {% if request.user.is_admin %}
+              <th>User</th>
+            {% endif %}
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for expense in expenses %}
+            <tr>
+              <td>{{ expense.title }}</td>
+              <td>{{ expense.amount }}</td>
+              <td>{{ expense.description }}</td>
+              <td>{{ expense.date }}</td>
+              {% if request.user.is_admin %}
+                <td>{{ expense.user.name }}</td>
+              {% endif %}
+              <td>
+                <a href="{% url 'edit-expense' expense.id %}" class="btn btn-sm btn-warning">Edit</a>
+                <a href="{% url 'delete-expense' expense.id %}" class="btn btn-sm btn-danger"
+                   onclick="return confirm('Are you sure you want to delete this expense?');">Delete</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="text-center">No expenses found.</p>
+    {% endif %}
+
+    <!-- Embed user chart data -->
+    {{ user_charts|json_script:"userChartData" }}
+
+    <!-- Chart Modal -->
+    <div class="modal fade" id="chartModal" tabindex="-1" aria-labelledby="chartModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-lg modal-dialog-centered">
+        <div class="modal-content p-3">
+          <div class="modal-header">
+            <h5 class="modal-title">Expense Chart</h5>
+            <select id="chartTypeSelector" class="form-select w-auto ms-3">
+              <option value="bar">Bar</option>
+              <option value="line">Line</option>
+              <option value="pie">Pie</option>
+              <option value="doughnut">Doughnut</option>
+            </select>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div id="noDataMessage" style="display: none;">No expense data available.</div>
+            <canvas id="expenseChart"></canvas>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bootstrap JS -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      const chartTypeSelector = document.getElementById('chartTypeSelector');
+      const ctx = document.getElementById('expenseChart').getContext('2d');
+      const noDataMessage = document.getElementById('noDataMessage');
+      let chartInstance = null;
+
+      let rawData = [];
+      try {
+        rawData = JSON.parse(document.getElementById('userChartData').textContent);
+      } catch (e) {
+        console.error("Invalid JSON data:", e);
+        return;
+      }
+
+      const pastelColors = [
+        '#7abdf3ff', 
+        '#f6be7aff', 
+        '#a4ff92ff', 
+        '#f779f7ff', 
+        '#9786f8ff',
+        '#fefe80ff', 
+        '#e7a97fff', 
+        '#95f4f7ff', 
+        '#fa94e7ff', 
+        '#6287c2ff',
+        '#6ef9c8ff', 
+        '#f5a875ff'
+      ];
+
+      const userColors = {};
+      rawData.forEach((entry, index) => {
+        userColors[entry.user] = pastelColors[index % pastelColors.length];
+      });
+
+      const chartModal = document.getElementById('chartModal');
+      chartModal.addEventListener('shown.bs.modal', () => {
+        renderChart(chartTypeSelector.value);
+      });
+
+      chartTypeSelector.addEventListener('change', () => {
+        renderChart(chartTypeSelector.value);
+      });
+
+      function renderChart(type) {
+        if (chartInstance) {
+          chartInstance.destroy();
+        }
+
+        if (!rawData || rawData.length === 0) {
+          noDataMessage.style.display = 'block';
+          return;
+        }
+
+        noDataMessage.style.display = 'none';
+
+        const labelSet = new Set();
+        rawData.forEach(entry => {
+          entry.data.forEach(item => labelSet.add(item.title));
+        });
+        const allLabels = Array.from(labelSet);
+
+        if (type === 'pie' || type === 'doughnut') {
+          const userSums = rawData.map(entry => {
+            const total = entry.data.reduce((sum, item) => sum + item.total, 0);
+            return { user: entry.user, total: total };
+          });
+
+          chartInstance = new Chart(ctx, {
+            type: type,
+            data: {
+              labels: userSums.map(e => e.user),
+              datasets: [{
+                data: userSums.map(e => e.total),
+                backgroundColor: userSums.map(e => userColors[e.user]),
+                borderColor: '#ffffff',
+                borderWidth: 2
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { display: true },
+                title: { display: false }
+              }
+            }
+          });
+
+        } else {
+          const datasets = rawData.map(entry => {
+            const dataMap = {};
+            entry.data.forEach(item => {
+              dataMap[item.title] = item.total;
+            });
+
+            const data = allLabels.map(label => dataMap[label] || 0);
+
+            return {
+              label: `${entry.user}'s Expenses`,
+              data: data,
+              backgroundColor: type === 'line' ? 'transparent' : userColors[entry.user],
+              borderColor: userColors[entry.user],
+              borderWidth: 2,
+              fill: type !== 'line',
+              barThickness: type === 'bar' ? 40 : undefined,
+              maxBarThickness: type === 'bar' ? 50 : undefined
+            };
+          });
+
+          chartInstance = new Chart(ctx, {
+            type: type,
+            data: {
+              labels: allLabels,
+              datasets: datasets
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { display: true },
+                title: { display: false }
+              }
+            }
+          });
+        }
+      }
+    });
+  </script>
+</body>
+</html>
